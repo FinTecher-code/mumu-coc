@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>Mumu-COC 控制台</title>
+<style>
+  :root { --bg:#12141a; --card:#1c2029; --line:#2a3040; --txt:#dde3ee; --dim:#8b94a7; --ok:#3fb96f; --run:#e0a63f; --bad:#e05555; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--bg); color:var(--txt); font:14px/1.5 -apple-system,"PingFang SC",sans-serif; padding:20px; }
+  h1 { font-size:18px; margin-bottom:16px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(430px,1fr)); gap:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  .head { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+  .dot { width:9px; height:9px; border-radius:50%; background:var(--dim); }
+  .dot.idle { background:var(--ok); } .dot.running { background:var(--run); } .dot.stopping { background:var(--bad); }
+  .name { font-weight:600; }
+  .addr { color:var(--dim); font-size:12px; margin-left:auto; }
+  .shot { width:100%; border-radius:6px; background:#000; min-height:120px; display:block; }
+  .row { display:flex; gap:6px; margin-top:10px; flex-wrap:wrap; }
+  button { background:#2a3245; color:var(--txt); border:1px solid var(--line); border-radius:6px; padding:6px 12px; cursor:pointer; font-size:13px; }
+  button:hover { background:#34405c; }
+  button.primary { background:#2d6e4f; border-color:#37825e; }
+  button.danger { background:#7a3030; border-color:#94403f; }
+  input, select { background:#12151d; border:1px solid var(--line); color:var(--txt); border-radius:6px; padding:6px 8px; font-size:13px; }
+  input { width:90px; }
+  .cfg { display:flex; gap:6px; margin-top:10px; flex-wrap:wrap; align-items:center; color:var(--dim); font-size:12px; }
+  .logs { margin-top:10px; background:#0c0e13; border:1px solid var(--line); border-radius:6px; padding:8px; height:150px; overflow-y:auto; font:11px/1.6 ui-monospace,Menlo,monospace; color:#9fb0cd; white-space:pre-wrap; }
+  .err { color:var(--bad); font-size:12px; margin-top:6px; min-height:16px; }
+  .add { margin-bottom:16px; display:flex; gap:8px; align-items:center; }
+  .add input { width:160px; }
+</style>
+</head>
+<body>
+<h1>Mumu-COC 控制台</h1>
+<div class="add">
+  <input id="a_host" placeholder="Windows 主机 IP">
+  <input id="a_port" placeholder="端口" style="width:90px">
+  <input id="a_name" placeholder="备注名" style="width:110px">
+  <button class="primary" onclick="addWorker()">添加模拟器</button>
+</div>
+<div class="grid" id="grid"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const state = {};
+
+async function api(method, url, body) {
+  const opt = { method, headers: {'Content-Type':'application/json'} };
+  if (body) opt.body = JSON.stringify(body);
+  const r = await fetch(url, opt);
+  if (!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || r.status);
+  return r.json();
+}
+
+async function addWorker() {
+  const host = $('#a_host').value.trim(), port = +$('#a_port').value, name = $('#a_name').value.trim();
+  if (!host || !port) return alert('填写 IP 和端口');
+  await api('POST', '/api/workers', {host, port, name});
+  $('#a_host').value = $('#a_port').value = $('#a_name').value = '';
+  refresh();
+}
+
+async function check(w)   { try { await api('POST', `/api/workers/${w.id}/check`); } catch(e){} refresh(); }
+async function start(w) {
+  const c = w.config || {};
+  try {
+    await api('POST', `/api/workers/${w.id}/start`, {
+      mode:  $(`#mode_${w.id}`).value,
+      dry:   $(`#dry_${w.id}`).value === '1',
+      min_gold:   +$(`#g_${w.id}`).value || 500000,
+      min_elixir: +$(`#e_${w.id}`).value || 500000,
+      max_searches: +$(`#n_${w.id}`).value || 5,
+    });
+  } catch(e) { $(`#err_${w.id}`).textContent = e.message; }
+  refresh();
+}
+async function stop(w)    { await api('POST', `/api/workers/${w.id}/stop`); refresh(); }
+async function login(w)   { try { await api('POST', `/api/workers/${w.id}/login`); } catch(e){ $(`#err_${w.id}`).textContent = e.message; } refresh(); }
+async function remove(w)  { if (confirm(`删除 ${w.name}?`)) { await api('DELETE', `/api/workers/${w.id}`); refresh(); } }
+
+function card(w) {
+  const shot = state['shot_'+w.id];
+  const cfg = w.config || {};
+  return `
+  <div class="card">
+    <div class="head">
+      <div class="dot ${w.status}"></div>
+      <div class="name">${w.name}</div>
+      <div class="addr">${w.host}:${w.port} · ${w.status}</div>
+    </div>
+    <img class="shot" src="/api/workers/${w.id}/screenshot?t=${shot||0}" onerror="this.style.opacity=.2">
+    <div class="cfg">
+      模式 <select id="mode_${w.id}">
+        <option value="solo" ${cfg.mode==='solo'?'selected':''}>单人(dry)</option>
+        <option value="multi" ${cfg.mode==='multi'?'selected':''}>联机</option>
+      </select>
+      <select id="dry_${w.id}">
+        <option value="1" ${cfg.dry!==false?'selected':''}>不下兵</option>
+        <option value="0" ${cfg.dry===false?'selected':''}>真实下兵</option>
+      </select>
+      金 ≥ <input id="g_${w.id}" value="${cfg.min_gold??500000}">
+      水 ≥ <input id="e_${w.id}" value="${cfg.min_elixir??500000}">
+      搜索 ≤ <input id="n_${w.id}" value="${cfg.max_searches??5}" style="width:60px">
+    </div>
+    <div class="row">
+      <button onclick='start(${JSON.stringify(w)})' class="primary">启动挂机</button>
+      <button onclick='login(${JSON.stringify(w)})'>登录游戏</button>
+      <button onclick='stop(${JSON.stringify(w)})' class="danger">停止</button>
+      <button onclick='check(${JSON.stringify(w)})'>测连接</button>
+      <button onclick="location.reload()">刷新截图</button>
+      <button onclick='remove(${JSON.stringify(w)})'>删除</button>
+    </div>
+    <div class="err" id="err_${w.id}"></div>
+    <div class="logs">${(w.logs||[]).join('\n') || '暂无日志'}</div>
+    ${w.last_result ? `<div class="cfg">上次结果: 搜索 ${w.last_result.searches??0} · 下兵 ${w.last_result.raids??0} · 收益 ${(w.last_result.loot_readings||[]).slice(-3).map(l=>l?l.join('/'):'' ).join(' | ')} ${w.last_result.errors?.length?('⚠ '+w.last_result.errors.join(';')):''}</div>` : ''}
+  </div>`;
+}
+
+async function refresh() {
+  try {
+    const ws = await api('GET', '/api/workers');
+    $('#grid').innerHTML = ws.map(card).join('') || '<div style="color:var(--dim)">还没有添加模拟器</div>';
+  } catch(e) { $('#grid').innerHTML = `<div style="color:var(--bad)">服务异常: ${e.message}</div>`; }
+}
+
+async function pollShots() {
+  document.querySelectorAll('.card').forEach(async c => {});
+}
+
+setInterval(refresh, 3000);
+setInterval(() => {
+  document.querySelectorAll('img.shot').forEach((img, i) => img.src = `/api/workers/${window._ids?.[i]}/screenshot?t=${Date.now()}`);
+}, 5000);
+const _refresh = refresh;
+refresh = async () => { await _refresh(); window._ids = (await (await fetch('/api/workers')).json()).map(w=>w.id); };
+refresh();
+</script>
+</body>
+</html>

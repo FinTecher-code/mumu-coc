@@ -1,0 +1,4 @@
+device:
+  host: 112.126.58.211
+  port: 21638
+  resolution: [960, 540]
